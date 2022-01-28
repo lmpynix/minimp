@@ -287,7 +287,7 @@ impl<'a> DecodedElement<'a> {
                     // 16-bit uint
                     if idx+2 < slice.len() {
                         // Attempt to derive a u16 from this
-                        if let Ok(uint_bytes) = slice[1..3].try_into() {
+                        if let Ok(uint_bytes) = slice[idx+1..idx+3].try_into() {
                             if local_endian_fields {
                                 Some(Self::UInt{size: 2, val: u16::from_le_bytes(uint_bytes) as u64})
                             } else {
@@ -304,7 +304,7 @@ impl<'a> DecodedElement<'a> {
                     // 32-bit uint
                     if idx+4 < slice.len() {
                         // Attempt to derive a u32 from this
-                        if let Ok(uint_bytes) = slice[1..5].try_into() {
+                        if let Ok(uint_bytes) = slice[idx+1..idx+5].try_into() {
                             if local_endian_fields {
                                 Some(Self::UInt{size: 4, val: u32::from_le_bytes(uint_bytes) as u64})
                             } else {
@@ -321,7 +321,7 @@ impl<'a> DecodedElement<'a> {
                     // 64-bit uint
                     if idx+8 < slice.len() {
                         // Attempt to derive a u64 from this
-                        if let Ok(uint_bytes) = slice[1..9].try_into() {
+                        if let Ok(uint_bytes) = slice[idx+1..idx+9].try_into() {
                             if local_endian_fields {
                                 Some(Self::UInt{size: 8, val: u64::from_le_bytes(uint_bytes) as u64})
                             } else {
@@ -347,7 +347,7 @@ impl<'a> DecodedElement<'a> {
                     // 16-bit int
                     if idx+2 < slice.len() {
                         // Attempt to derive a u16 from this
-                        if let Ok(int_bytes) = slice[1..3].try_into() {
+                        if let Ok(int_bytes) = slice[idx+1..idx+3].try_into() {
                             if local_endian_fields {
                                 Some(Self::Int{size: 2, val: i16::from_le_bytes(int_bytes) as i64})
                             } else {
@@ -364,7 +364,7 @@ impl<'a> DecodedElement<'a> {
                     // 32-bit int
                     if idx+4 < slice.len() {
                         // Attempt to derive a i32 from this
-                        if let Ok(int_bytes) = slice[1..5].try_into() {
+                        if let Ok(int_bytes) = slice[idx+1..idx+5].try_into() {
                             if local_endian_fields {
                                 Some(Self::Int{size: 4, val: i32::from_le_bytes(int_bytes) as i64})
                             } else {
@@ -381,7 +381,7 @@ impl<'a> DecodedElement<'a> {
                     // 64-bit int
                     if idx+8 < slice.len() {
                         // Attempt to derive a i64 from this
-                        if let Ok(int_bytes) = slice[1..9].try_into() {
+                        if let Ok(int_bytes) = slice[idx+1..idx+9].try_into() {
                             if local_endian_fields {
                                 Some(Self::Int{size: 8, val: i64::from_le_bytes(int_bytes) as i64})
                             } else {
@@ -402,7 +402,7 @@ impl<'a> DecodedElement<'a> {
                     // f32
                     if idx+4 < slice.len() {
                         // Attempt to derive an f32 from this
-                        if let Ok(float_bytes) = slice[1..5].try_into() {
+                        if let Ok(float_bytes) = slice[idx+1..idx+5].try_into() {
                             if local_endian_fields {
                                 Some(Self::Float(f32::from_le_bytes(float_bytes)))
                             } else {
@@ -419,7 +419,7 @@ impl<'a> DecodedElement<'a> {
                     // f64
                     if idx+8 < slice.len() {
                         // Attempt to derive an f64 from this
-                        if let Ok(float_bytes) = slice[1..9].try_into() {
+                        if let Ok(float_bytes) = slice[idx+1..idx+9].try_into() {
                             if local_endian_fields {
                                 Some(Self::Double(f64::from_le_bytes(float_bytes)))
                             } else {
