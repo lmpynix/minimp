@@ -1,7 +1,37 @@
 #![no_std]
 
+use core::iter::Iterator;
+
 type UBytes = u8;
 
+/// Get the minimum number of bytes needed to represent the given integer
+#[inline]
+pub fn get_min_size_signed(i: i64) -> UBytes {
+    if i > i32::MAX as i64 || i < i32::MIN as i64 {
+        8 // Need a 64 bit
+    } else if i > i16::MAX as i64 || i < i16::MIN as i64 {
+        4 // Need a 32 bit
+    } else if i > i8::MAX as i64 || i < i8::MIN as i64 {
+        2 // Need a 16 bit
+    } else {
+        8
+    }
+}
+/// Get the minimum number of bytes needed to represent the given integer
+#[inline]
+pub fn get_min_size_unsigned(i: u64) -> UBytes {
+    if i > u32::MAX as u64 {
+        8
+    } else if i > u16::MAX as u64 {
+        4
+    } else if i > u8::MAX as u64 {
+        2
+    } else {
+        1
+    }
+}
+
+#[derive(Copy, Clone)]
 pub enum ZeroCopyIf<'a, T: Copy> {
     Ref(&'a T),
     Val(T),
@@ -17,7 +47,9 @@ impl<'a, T: Copy> ZeroCopyIf<'a, T> {
     }
 }
 
+#[derive(Copy, Clone)]
 pub struct ArrayDecoder<'a> {
+    header_size: UBytes, // Does not include first byte
     array: &'a [u8], // First element of this needs to be the first data byte
     elements: usize,
     element_size: Option<usize>,
@@ -70,8 +102,30 @@ impl<'a> ArrayDecoder<'a> {
             None
         }
     }
-    /// Get the next element from the array, as recorded by the internal counter
-    pub fn get_next(&mut self) -> Option<DecodedElement<'a>> {
+    /// Reset the "next" element to the beginning
+    #[inline]
+    pub fn reset(&mut self) -> () {
+        self.next_element = 0;
+        self.eob = false;
+    }
+
+    pub fn byte_size(&self) -> usize {
+        // Clone ourselves and iterate over the clone
+        let mut new_self = self.clone();
+        new_self.reset();
+        let mut data_size = 0;
+        for element in new_self {
+            data_size += element.byte_size();
+        }
+        data_size + self.header_size as usize + 1
+    }
+}
+
+/// We don't have to consume arrays in-order but having an iterator is convenient
+impl<'a> Iterator for ArrayDecoder<'a> {
+    type Item = DecodedElement<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
         if self.next_element < self.elements {
             self.next_element += 1;
             self.get_element(self.next_element)
@@ -79,14 +133,9 @@ impl<'a> ArrayDecoder<'a> {
             None
         }
     }
-    /// Reset the "next" element to the beginning
-    #[inline]
-    pub fn reset(&mut self) -> () {
-        self.next_element = 0;
-        self.eob = false;
-    }
 }
 
+#[derive(Copy, Clone)]
 pub struct MapElements<'a> {
     key: DecodedElement<'a>,
     value: DecodedElement<'a>,
@@ -99,7 +148,9 @@ impl<'a> MapElements<'a> {
     }
 }
 
+#[derive(Copy, Clone)]
 pub struct MapDecoder<'a> {
+    header_size: UBytes, // Does not include first byte
     map: &'a [u8],
     elements: usize,
     next_idx: usize,
@@ -128,8 +179,33 @@ impl<'a> MapDecoder<'a> {
         }
 
     }
-    /// Get the next element in the list of mappings
-    pub fn get_next(&mut self) -> Option<MapElements<'a>> {
+    /// Reset to the first element
+    #[inline]
+    pub fn reset(&mut self) -> () {
+        self.next_map = 0;
+        self.next_idx = 0;
+        self.eob = false;
+    }
+    /// Get the total size of the map.
+    /// 
+    /// This operation is very (comparatively) expensive!  It requires consuming all of the map elements in order.
+    pub fn byte_size(&self) -> usize {
+        // Clone a new copy of ourselves such that we can reset it and use it
+        let mut new_self = self.clone();
+        new_self.reset();
+        let mut data_size = 0;
+        for map in new_self {
+            data_size += map.byte_size();
+        }
+        data_size + self.header_size as usize + 1
+    }
+}
+
+/// As we have to consume the map sequentially, it makes sense to use it as an iterator
+impl<'a> Iterator for MapDecoder<'a> {
+    type Item = MapElements<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
         if  self.next_idx < self.map.len() && 
             self.next_map < self.elements &&
             !self.eob
@@ -154,26 +230,20 @@ impl<'a> MapDecoder<'a> {
             None
         }
     }
-    /// Reset to the first element
-    #[inline]
-    pub fn reset(&mut self) -> () {
-        self.next_map = 0;
-        self.next_idx = 0;
-        self.eob = false;
-    }
 }
 
+#[derive(Copy, Clone)]
 pub enum DecodedElement<'a> {
     Int{size: UBytes, val: ZeroCopyIf<'a, i64>},
     UInt{size: UBytes, val: ZeroCopyIf<'a, u64>},
     Bool(bool),
-    Bin{size: usize, val: &'a[u8]},
+    Bin{header_size: UBytes, val: &'a[u8]},
     Float(ZeroCopyIf<'a, f32>),
     Double(ZeroCopyIf<'a, f64>),
-    Str(&'a str),
+    Str{header_size: UBytes, val: &'a str},
     Array(ArrayDecoder<'a>),
     Map(MapDecoder<'a>),
-    Ext{size: usize, exttype: u8, data: &'a [u8]}
+    Ext{header_size: UBytes, exttype: u8, data: &'a [u8]}
 }
 
 impl<'a> DecodedElement<'a> {
@@ -182,8 +252,20 @@ impl<'a> DecodedElement<'a> {
         None
     }
     pub fn byte_size(&self) -> usize {
-        // TODO: Write me
-        0
+        /* We cannot assume that the item was expressed in the most compact form,
+         * so we saved the size of the decoded element when we decoded it. */
+        match self {
+            Self::Int{size: s, val: _} => *s as usize + 1, // Always one overhead byte for Int and Uint, because 0 for size is an option (fixint)
+            Self::UInt{size: s, val: _} => *s as usize + 1,
+            Self::Bool(_) => 1,
+            Self::Bin{header_size: hs, val: v} => *hs as usize + v.len() as usize + 1,
+            Self::Float(_) => 5,
+            Self::Double(_) => 9,
+            Self::Str{header_size: hs, val: v} => *hs as usize + v.len() as usize + 1,
+            Self::Ext{header_size: hs, data: d, ..} => *hs as usize + d.len() as usize + 2,
+            Self::Array(a) => a.byte_size(),
+            Self::Map(m) => m.byte_size(),
+        }
     }
 }
 
