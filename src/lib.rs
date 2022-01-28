@@ -31,6 +31,7 @@ pub fn get_min_size_unsigned(i: u64) -> UBytes {
     }
 }
 
+/*
 #[derive(Copy, Clone)]
 pub enum ZeroCopyIf<'a, T: Copy> {
     Ref(&'a T),
@@ -46,10 +47,12 @@ impl<'a, T: Copy> ZeroCopyIf<'a, T> {
         }
     }
 }
+*/
 
 #[derive(Copy, Clone)]
 pub struct ArrayDecoder<'a> {
     header_size: UBytes, // Does not include first byte
+    local_endian_fields: bool,
     array: &'a [u8], // First element of this needs to be the first data byte
     elements: usize,
     element_size: Option<usize>,
@@ -61,7 +64,7 @@ impl<'a> ArrayDecoder<'a> {
     /// Get the array element beginning at a specific byte index
     #[inline]
     fn get_at_idx(&self, idx: usize) -> Option<DecodedElement<'a>> {
-        DecodedElement::from_slice_idx(self.array, idx)
+        DecodedElement::from_slice_idx(self.array, idx, self.local_endian_fields)
     }
     /// Get the array index from the element index
     fn idx_from_element(&mut self, element: usize) -> Option<usize> {
@@ -151,6 +154,7 @@ impl<'a> MapElements<'a> {
 #[derive(Copy, Clone)]
 pub struct MapDecoder<'a> {
     header_size: UBytes, // Does not include first byte
+    local_endian_fields: bool,
     map: &'a [u8],
     elements: usize,
     next_idx: usize,
@@ -161,12 +165,12 @@ pub struct MapDecoder<'a> {
 impl<'a> MapDecoder<'a> {
     /// Get the map starting at the given index
     fn get_at_idx(&self, idx: usize) -> Option<MapElements<'a>> {
-        if let Some(key) = DecodedElement::from_slice_idx(self.map, idx) {
+        if let Some(key) = DecodedElement::from_slice_idx(self.map, idx, self.local_endian_fields) {
             // Key was decoded at the index, so determine its size and look for its value
             let value_idx = idx + key.byte_size();
             if value_idx >= self.map.len() {
                 None
-            } else if let Some(val) = DecodedElement::from_slice_idx(self.map, value_idx) {
+            } else if let Some(val) = DecodedElement::from_slice_idx(self.map, value_idx, self.local_endian_fields) {
                 Some(MapElements {
                     key,
                     value: val
@@ -234,12 +238,13 @@ impl<'a> Iterator for MapDecoder<'a> {
 
 #[derive(Copy, Clone)]
 pub enum DecodedElement<'a> {
-    Int{size: UBytes, val: ZeroCopyIf<'a, i64>},
-    UInt{size: UBytes, val: ZeroCopyIf<'a, u64>},
+    Nil,
+    Int{size: UBytes, val: i64},
+    UInt{size: UBytes, val: u64},
     Bool(bool),
     Bin{header_size: UBytes, val: &'a[u8]},
-    Float(ZeroCopyIf<'a, f32>),
-    Double(ZeroCopyIf<'a, f64>),
+    Float(f32),
+    Double(f64),
     Str{header_size: UBytes, val: &'a str},
     Array(ArrayDecoder<'a>),
     Map(MapDecoder<'a>),
@@ -247,14 +252,196 @@ pub enum DecodedElement<'a> {
 }
 
 impl<'a> DecodedElement<'a> {
-    pub fn from_slice_idx(slice: &'a [u8], idx: usize) -> Option<Self> {
-        // TODO: Write me
-        None
+    /// Decode a MessagePack element that begins at `idx` in `slice`.
+    pub fn from_slice_idx(slice: &'a [u8], idx: usize, local_endian_fields: bool) -> Option<Self> {
+        /* Like most binary decoders, this is one whole big match expression.
+         * We take the header byte, figure out what kind of field it is, and (assuming it is valid) create
+         * a DecodedElement from it.
+         * One big wrinkle here is Endianness.  Normally, we would prefer to just avoid copying
+         * out of the buffer, and read values directly from the memory.  However, in order to do this,
+         * there would have to be some way of lazily evaluating the conversion.  There's not any real
+         * benefit to this, though.  So, I have elected to just convert and copy everything that is not
+         * big enough to need its own buffer.
+         */
+        // First, attempt to match the fixints, since they're not easy to do with the match arms 
+        if slice[idx] < 0x80 {
+            // This is a positive fixint
+            Some(Self::Int{size: 0, val: slice[idx] as i64})
+        } else if slice[idx] > 0xE0 {
+            // This is a negative fixint
+            Some(Self::Int{size: 0, val: slice[idx] as i64})
+        } else {
+            match slice[0] {
+                // Nil
+                0xC0 => Some(Self::Nil),
+                // Unsigned ints
+                0xCC => {
+                    // 8-bit uint
+                    if idx+1 < slice.len() {
+                        Some(Self::UInt{size: 1, val: slice[idx+1] as u64})
+                    } else {
+                        None
+                    }
+                },
+                0xCD => {
+                    // 16-bit uint
+                    if idx+2 < slice.len() {
+                        // Attempt to derive a u16 from this
+                        if let Ok(uint_bytes) = slice[1..3].try_into() {
+                            if local_endian_fields {
+                                Some(Self::UInt{size: 2, val: u16::from_le_bytes(uint_bytes) as u64})
+                            } else {
+                                Some(Self::UInt{size: 2, val: u16::from_be_bytes(uint_bytes) as u64})
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                },
+                0xCE => {
+                    // 32-bit uint
+                    if idx+4 < slice.len() {
+                        // Attempt to derive a u32 from this
+                        if let Ok(uint_bytes) = slice[1..5].try_into() {
+                            if local_endian_fields {
+                                Some(Self::UInt{size: 4, val: u32::from_le_bytes(uint_bytes) as u64})
+                            } else {
+                                Some(Self::UInt{size: 4, val: u32::from_be_bytes(uint_bytes) as u64})
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                },
+                0xCF => {
+                    // 64-bit uint
+                    if idx+8 < slice.len() {
+                        // Attempt to derive a u64 from this
+                        if let Ok(uint_bytes) = slice[1..9].try_into() {
+                            if local_endian_fields {
+                                Some(Self::UInt{size: 8, val: u64::from_le_bytes(uint_bytes) as u64})
+                            } else {
+                                Some(Self::UInt{size: 8, val: u64::from_be_bytes(uint_bytes) as u64})
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                },
+                // Signed Ints
+                0xD0 => {
+                    // 8-bit int
+                    if idx+1 < slice.len() {
+                        Some(Self::Int{size: 1, val: slice[idx+1] as i64})
+                    } else {
+                        None
+                    }
+                },
+                0xD1 => {
+                    // 16-bit int
+                    if idx+2 < slice.len() {
+                        // Attempt to derive a u16 from this
+                        if let Ok(int_bytes) = slice[1..3].try_into() {
+                            if local_endian_fields {
+                                Some(Self::Int{size: 2, val: i16::from_le_bytes(int_bytes) as i64})
+                            } else {
+                                Some(Self::Int{size: 2, val: i16::from_be_bytes(int_bytes) as i64})
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                },
+                0xD2 => {
+                    // 32-bit int
+                    if idx+4 < slice.len() {
+                        // Attempt to derive a i32 from this
+                        if let Ok(int_bytes) = slice[1..5].try_into() {
+                            if local_endian_fields {
+                                Some(Self::Int{size: 4, val: i32::from_le_bytes(int_bytes) as i64})
+                            } else {
+                                Some(Self::Int{size: 4, val: i32::from_be_bytes(int_bytes) as i64})
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                },
+                0xD3 => {
+                    // 64-bit int
+                    if idx+8 < slice.len() {
+                        // Attempt to derive a i64 from this
+                        if let Ok(int_bytes) = slice[1..9].try_into() {
+                            if local_endian_fields {
+                                Some(Self::Int{size: 8, val: i64::from_le_bytes(int_bytes) as i64})
+                            } else {
+                                Some(Self::Int{size: 8, val: i64::from_be_bytes(int_bytes) as i64})
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                },
+                // Booleans
+                0xC2 => Some(Self::Bool(false)),
+                0xC3 => Some(Self::Bool(true)),
+                // Floats
+                0xCA => {
+                    // f32
+                    if idx+4 < slice.len() {
+                        // Attempt to derive an f32 from this
+                        if let Ok(float_bytes) = slice[1..5].try_into() {
+                            if local_endian_fields {
+                                Some(Self::Float(f32::from_le_bytes(float_bytes)))
+                            } else {
+                                Some(Self::Float(f32::from_be_bytes(float_bytes)))
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                },
+                0xCB => {
+                    // f64
+                    if idx+8 < slice.len() {
+                        // Attempt to derive an f64 from this
+                        if let Ok(float_bytes) = slice[1..9].try_into() {
+                            if local_endian_fields {
+                                Some(Self::Double(f64::from_le_bytes(float_bytes)))
+                            } else {
+                                Some(Self::Double(f64::from_be_bytes(float_bytes)))
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                },
+                _ => None
+            }
+        }
     }
+    /// Get the size, in bytes, of the MesagePack representation this element was decoded from
     pub fn byte_size(&self) -> usize {
         /* We cannot assume that the item was expressed in the most compact form,
          * so we saved the size of the decoded element when we decoded it. */
         match self {
+            Self::Nil => 1,
             Self::Int{size: s, val: _} => *s as usize + 1, // Always one overhead byte for Int and Uint, because 0 for size is an option (fixint)
             Self::UInt{size: s, val: _} => *s as usize + 1,
             Self::Bool(_) => 1,
