@@ -51,7 +51,7 @@ impl<'a, T: Copy> ZeroCopyIf<'a, T> {
 }
 */
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub struct ArrayDecoder<'a> {
     header_size: UBytes, // Does not include first byte
     local_endian_fields: bool,
@@ -153,7 +153,7 @@ impl<'a> MapElements<'a> {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub struct MapDecoder<'a> {
     header_size: UBytes, // Does not include first byte
     local_endian_fields: bool,
@@ -238,7 +238,7 @@ impl<'a> Iterator for MapDecoder<'a> {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub enum DecodedElement<'a> {
     Nil,
     Int{size: UBytes, val: i64},
@@ -271,7 +271,7 @@ impl<'a> DecodedElement<'a> {
             Some(Self::Int{size: 0, val: slice[idx] as i64})
         } else if slice[idx] > 0xE0 {
             // This is a negative fixint
-            Some(Self::Int{size: 0, val: slice[idx] as i64})
+            Some(Self::Int{size: 0, val: (slice[idx] as i64) - 256})
         } else if slice[idx] >= 0x80 && slice[idx] <= 0x8F {
             // Fixmap
             let elements: usize = (slice[idx] & 0x0F) as usize;
@@ -700,9 +700,45 @@ impl<'a> DecodedElement<'a> {
 
 #[cfg(test)]
 mod tests {
+    use crate::*;
     #[test]
-    fn it_works() {
-        let result = 2 + 2;
-        assert_eq!(result, 4);
+    fn nil_decode() {
+        let t: [u8; 1] = [0xC0];
+        if let Some(DecodedElement::Nil) = DecodedElement::from_slice_idx(&t, 0, false) {
+            
+        } else {
+            panic!()
+        }
+    }
+
+    #[test]
+    fn int_decode() {
+        let a: [u8; 1] = [0b00001000]; // fixint positive 8
+        let b: [u8; 1] = [0b11111110]; // fixint negative 2
+        let c: [u8; 3] = [0xCD, 0x27, 0x3A]; // uint16 10042
+        let d: [u8; 5] = [0xD2, 0xFF, 0xFF, 0xFF, 0xFC]; // int32 -4
+        assert_eq!(Some(DecodedElement::Int{size: 0, val: 8}), DecodedElement::from_slice_idx(&a, 0, false));
+        assert_eq!(Some(DecodedElement::Int{size: 0, val: -2}), DecodedElement::from_slice_idx(&b, 0, false));
+        assert_eq!(Some(DecodedElement::UInt{size: 2, val: 10042}), DecodedElement::from_slice_idx(&c, 0, false));
+        assert_eq!(Some(DecodedElement::Int{size: 4, val: -4}), DecodedElement::from_slice_idx(&d, 0, false));
+    }
+
+    #[test]
+    fn float_decode() {
+        let a_num: [u8; 4] = 3.1415926535_f32.to_be_bytes();
+        let a: [u8; 5] = [0xCA, a_num[0], a_num[1], a_num[2], a_num[3]];
+        let b_num: [u8; 8] = (22_f64/7_f64).to_be_bytes();
+        let b: [u8; 9] = [0xCB, b_num[0], b_num[1], b_num[2], b_num[3], b_num[4], b_num[5], b_num[6], b_num[7]];
+        assert_eq!(Some(DecodedElement::Float(3.1415926535_f32)), DecodedElement::from_slice_idx(&a, 0, false));
+        assert_eq!(Some(DecodedElement::Double(22_f64/7_f64)), DecodedElement::from_slice_idx(&b, 0, false));
+    }
+
+    #[test]
+    fn overrun_safety() {
+        let a: [u8; 2] = [0xCD, 0x00]; // too short int
+        let b: [u8; 4] = [0xCB, 0xFF, 0xEC, 0xEB]; // too short float
+        // None of these should panic
+        assert_eq!(None, DecodedElement::from_slice_idx(&a, 0, false));
+        assert_eq!(None, DecodedElement::from_slice_idx(&b, 0, false));
     }
 }
