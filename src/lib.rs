@@ -287,9 +287,30 @@ impl<'a> DecodedElement<'a> {
             Some(Self::Map(decoder))
         } else if slice[idx] >= 0x90 && slice[idx] <= 0x9F {
             // Fixarray
-
+            let elements: usize = (slice[idx] & 0x0F) as usize;
+            let decoder = ArrayDecoder {
+                header_size: 0,
+                local_endian_fields,
+                elements,
+                array: &slice[idx+1..],
+                next_element: 0,
+                element_size: None,
+                eob: false
+            };
+            Some(Self::Array(decoder))
         } else if slice[idx] >= 0xA0 && slice[idx] <= 0xBF {
             // Fixstr
+            let length: usize = (slice[idx] & 0x1F) as usize;
+            // Check that we have enough length
+            if idx + length < slice.len() {
+                if let Ok(s) = str::from_utf8(&slice[idx+1..idx+1+length]) {
+                    Some(Self::Str{header_size: 0, val: s})
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
         } else {
             match slice[idx] {
                 // Nil
@@ -608,6 +629,47 @@ impl<'a> DecodedElement<'a> {
                     if idx+5+size < slice.len() {
                         let t: u8 = slice[idx+4];
                         Some(Self::Ext{header_size: 4, exttype: t, data: &slice[idx+5..idx+5+size]})
+                    } else {
+                        None
+                    }
+                },
+                // Fixext
+                0xD4 => {
+                    // fixext 1
+                    if idx+2 < slice.len() {
+                        Some(Self::Ext{header_size: 0, exttype: slice[idx+1], data: &slice[idx+2..idx+3]})
+                    } else {
+                        None
+                    }
+                },
+                0xD5 => {
+                    // fixext 2
+                    if idx+4 < slice.len() {
+                        Some(Self::Ext{header_size: 0, exttype: slice[idx+1], data: &slice[idx+2..idx+4]})
+                    } else {
+                        None
+                    }
+                },
+                0xD6 => {
+                    // fixext 4
+                    if idx+6 < slice.len() {
+                        Some(Self::Ext{header_size: 0, exttype: slice[idx+1], data: &slice[idx+2..idx+6]})
+                    } else {
+                        None
+                    }
+                },
+                0xD7 => {
+                    // fixext 8
+                    if idx+10 < slice.len() {
+                        Some(Self::Ext{header_size: 0, exttype: slice[idx+1], data: &slice[idx+2..idx+10]})
+                    } else {
+                        None
+                    }
+                },
+                0xD8 => {
+                    // fixext 8
+                    if idx+18 < slice.len() {
+                        Some(Self::Ext{header_size: 0, exttype: slice[idx+1], data: &slice[idx+2..idx+18]})
                     } else {
                         None
                     }
