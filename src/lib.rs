@@ -1,6 +1,8 @@
 #![no_std]
 
 use core::iter::Iterator;
+use core::str;
+
 
 type UBytes = u8;
 
@@ -264,14 +266,32 @@ impl<'a> DecodedElement<'a> {
          * big enough to need its own buffer.
          */
         // First, attempt to match the fixints, since they're not easy to do with the match arms 
-        if slice[idx] < 0x80 {
+        if slice[idx] <= 0x7f {
             // This is a positive fixint
             Some(Self::Int{size: 0, val: slice[idx] as i64})
         } else if slice[idx] > 0xE0 {
             // This is a negative fixint
             Some(Self::Int{size: 0, val: slice[idx] as i64})
+        } else if slice[idx] >= 0x80 && slice[idx] <= 0x8F {
+            // Fixmap
+            let elements: usize = (slice[idx] & 0x0F) as usize;
+            let decoder = MapDecoder {
+                header_size: 0,
+                local_endian_fields,
+                elements,
+                eob: false,
+                map: &slice[idx+1..],
+                next_idx: 0,
+                next_map: 0,
+            };
+            Some(Self::Map(decoder))
+        } else if slice[idx] >= 0x90 && slice[idx] <= 0x9F {
+            // Fixarray
+
+        } else if slice[idx] >= 0xA0 && slice[idx] <= 0xBF {
+            // Fixstr
         } else {
-            match slice[0] {
+            match slice[idx] {
                 // Nil
                 0xC0 => Some(Self::Nil),
                 // Unsigned ints
@@ -428,6 +448,166 @@ impl<'a> DecodedElement<'a> {
                         } else {
                             None
                         }
+                    } else {
+                        None
+                    }
+                },
+                0xD9 => {
+                    // str 8
+                    if idx+1 < slice.len() {
+                        let length: usize  = slice[idx+1] as usize;
+                        // Build a slice from the given information
+                        if idx + 1 + length < slice.len() {
+                            if let Ok(s) = str::from_utf8(&slice[idx+2..idx+2+length]) {
+                                Some(Self::Str{header_size: 1, val: s})
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                },
+                0xDA => {
+                    // str 16
+                    let size: usize = if let Ok(size_bytes) = slice[idx+1..idx+3].try_into() {
+                            if local_endian_fields {
+                                u16::from_le_bytes(size_bytes) as usize
+                            } else {
+                                u16::from_be_bytes(size_bytes) as usize
+                            }
+                    } else {
+                        return None;
+                    };
+                    if idx+2+size < slice.len() {
+                        if let Ok(s) = str::from_utf8(&slice[idx+3..idx+3+size]) {
+                            Some(Self::Str{header_size: 2, val: s})
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                },
+                0xDB => {
+                    // str 32
+                    let size: usize = if let Ok(size_bytes) = slice[idx+1..idx+5].try_into() {
+                            if local_endian_fields {
+                                u32::from_le_bytes(size_bytes) as usize
+                            } else {
+                                u32::from_be_bytes(size_bytes) as usize
+                            }
+                    } else {
+                        return None;
+                    };
+                    if idx+4+size < slice.len() {
+                        if let Ok(s) = str::from_utf8(&slice[idx+5..idx+5+size]) {
+                            Some(Self::Str{header_size: 4, val: s})
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                },
+                0xC4 => {
+                    // bin 8
+                    if idx+1 < slice.len() {
+                        let length: usize  = slice[idx+1] as usize;
+                        // Build a slice from the given information
+                        if idx + 1 + length < slice.len() {
+                            Some(Self::Bin{header_size: 1, val: &slice[idx+2..idx+2+length]})
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                },
+                0xC5 => {
+                    // bin 16
+                    let size: usize = if let Ok(size_bytes) = slice[idx+1..idx+3].try_into() {
+                            if local_endian_fields {
+                                u16::from_le_bytes(size_bytes) as usize
+                            } else {
+                                u16::from_be_bytes(size_bytes) as usize
+                            }
+                    } else {
+                        return None;
+                    };
+                    if idx+2+size < slice.len() {
+                        Some(Self::Bin{header_size: 2, val: &slice[idx+3..idx+3+size]})
+                    } else {
+                        None
+                    }
+                },
+                0xC6 => {
+                    // bin 32
+                    let size: usize = if let Ok(size_bytes) = slice[idx+1..idx+5].try_into() {
+                            if local_endian_fields {
+                                u32::from_le_bytes(size_bytes) as usize
+                            } else {
+                                u32::from_be_bytes(size_bytes) as usize
+                            }
+                    } else {
+                        return None;
+                    };
+                    if idx+4+size < slice.len() {
+                        Some(Self::Bin{header_size: 4, val: &slice[idx+5..idx+5+size]})
+                    } else {
+                        None
+                    }
+                },
+                // EXT fields: like bin except they have a 1 byte tag that comes with them
+                0xC7 => {
+                    // ext 8
+                    if idx+2 < slice.len() {
+                        let length: usize  = slice[idx+1] as usize;
+                        let t: u8 = slice[idx+2];
+                        // Build a slice from the given information
+                        if idx + 1 + length < slice.len() {
+                            Some(Self::Ext{header_size: 1, exttype: t, data: &slice[idx+3..idx+3+length]})
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                },
+                0xC8 => {
+                    // ext 16
+                    let size: usize = if let Ok(size_bytes) = slice[idx+1..idx+3].try_into() {
+                            if local_endian_fields {
+                                u16::from_le_bytes(size_bytes) as usize
+                            } else {
+                                u16::from_be_bytes(size_bytes) as usize
+                            }
+                    } else {
+                        return None;
+                    };
+                    if idx+3+size < slice.len() {
+                        let t: u8 = slice[idx+3];
+                        Some(Self::Ext{header_size: 2, exttype: t, data: &slice[idx+4..idx+4+size]})
+                    } else {
+                        None
+                    }
+                },
+                0xC9 => {
+                    // ext 32
+                    let size: usize = if let Ok(size_bytes) = slice[idx+1..idx+5].try_into() {
+                            if local_endian_fields {
+                                u32::from_le_bytes(size_bytes) as usize
+                            } else {
+                                u32::from_be_bytes(size_bytes) as usize
+                            }
+                    } else {
+                        return None;
+                    };
+                    if idx+5+size < slice.len() {
+                        let t: u8 = slice[idx+4];
+                        Some(Self::Ext{header_size: 4, exttype: t, data: &slice[idx+5..idx+5+size]})
                     } else {
                         None
                     }
