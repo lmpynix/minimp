@@ -12,7 +12,7 @@ pub fn get_min_size_signed(i: i64) -> UBytes {
     } else if i > i8::MAX as i64 || i < i8::MIN as i64 {
         2 // Need a 16 bit
     } else {
-        8
+        1
     }
 }
 /// Get the minimum number of bytes needed to represent the given integer

@@ -333,7 +333,8 @@ impl<'a> DecodedElement<'a> {
                 0xD0 => {
                     // 8-bit int
                     if idx+1 < slice.len() {
-                        Some(Self::Int{size: 1, val: slice[idx+1] as i64})
+                        let bytes: [u8; 2] = [0x0, slice[idx+1]];
+                        Some(Self::Int{size: 1, val: i16::from_be_bytes(bytes) as i64})
                     } else {
                         None
                     }
