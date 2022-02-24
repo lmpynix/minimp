@@ -191,20 +191,20 @@ impl<'a> EncodedElement<'a> {
                     match size_n {
                         1 => {
                             write_slice[0] = 0xC4;
-                            write_slice[1] = size_n as u8;
-                            write_slice[2..i.len()].copy_from_slice(&i);
+                            write_slice[1] = i.len() as u8;
+                            write_slice[2..2+i.len()].copy_from_slice(&i);
                         },
                         2 => {
                             write_slice[0] = 0xC5;
-                            let size_bytes = (size_n as u16).to_be_bytes();
+                            let size_bytes = (i.len() as u16).to_be_bytes();
                             write_slice[1..3].copy_from_slice(&size_bytes);
-                            write_slice[3..i.len()].copy_from_slice(&i);
+                            write_slice[3..3+i.len()].copy_from_slice(&i);
                         },
                         4 => {
                             write_slice[0] = 0xC6;
-                            let size_bytes = (size_n as u32).to_be_bytes();
+                            let size_bytes = (i.len() as u32).to_be_bytes();
                             write_slice[1..5].copy_from_slice(&size_bytes);
-                            write_slice[5..i.len()].copy_from_slice(&i);
+                            write_slice[5..5+i.len()].copy_from_slice(&i);
                         },
                         _ => {
                             // Too big
@@ -239,11 +239,85 @@ impl<'a> EncodedElement<'a> {
                         i.to_be_bytes()
                     };
                     write_slice[1..9].copy_from_slice(&bytes);
-                    5
+                    9
                 } else {
                     0
                 }
             },
+            Self::Str(i) => {
+                let bytes = i.as_bytes();
+                let size_n = get_min_size_unsigned(bytes.len() as u64) as usize;
+                if write_slice.len() >= 1_usize + size_n + bytes.len() {
+                    match size_n {
+                        1 => {
+                            // String has an option for fixstr that is very compact, so try to use it
+                            if size_n < 31 {
+                                write_slice[0] = (bytes.len() as u8) + 0xA0;
+                                write_slice[1..bytes.len()].copy_from_slice(&bytes);
+                            } else {
+                                write_slice[0] = 0xD9;
+                                write_slice[1] = bytes.len() as u8;
+                                write_slice[2..2+bytes.len()].copy_from_slice(&bytes);
+                            }
+                        },
+                        2 => {
+                            write_slice[0] = 0xDA;
+                            let size_bytes = (bytes.len() as u16).to_be_bytes();
+                            write_slice[1..3].copy_from_slice(&size_bytes);
+                            write_slice[3..3+bytes.len()].copy_from_slice(&bytes);
+                        },
+                        4 => {
+                            write_slice[0] = 0xDB;
+                            let size_bytes = (bytes.len() as u32).to_be_bytes();
+                            write_slice[1..5].copy_from_slice(&size_bytes);
+                            write_slice[5..5+bytes.len()].copy_from_slice(&bytes);
+                        },
+                        _ => {
+                            // Too big
+                            return 0;
+                        }
+                    };
+                    1_usize + size_n + i.len()
+                } else {
+                    0
+                }
+            },
+            Self::Ext{exttype: t, data: i} => {
+                const max_size: usize = (u32::MAX - 1) as usize;
+                match i.len() {
+                    // Not sure how fixext is supposed to be used, 
+                    // so for this purpose we only make fixext if the number
+                    // of bytes is exact.
+                    1 | 2 | 4 | 8 | 16 => {
+                        if write_slice.len() > 2 + i.len() {
+                            write_slice[0] = 0xD4 + (i.len().log2() as u8);
+                            write_slice[1] = t;
+                            write_slice[2..2+i.len()].copy_from_slice(i);
+                            3
+                        } else {
+                            0
+                        }
+                    },
+                    3..=max_size => {
+                        let size_n = get_min_size_unsigned(i.len() as u64) as usize;
+                        if write_slice.len() >= 3 + size_n + i.len() {
+                            write_slice[0] = 0xC7 + (size_n as u8 / 2);
+                            write_slice[1..1+size_n].copy_from_slice(&(i.len() as u64).to_be_bytes()[8-size_n..]); // big endian so take the last n bytes
+                            write_slice[1+size_n..1+size_n+i.len()].copy_from_slice(&i);
+                            1+size_n+i.len()
+                        } else {
+                            0
+                        }
+                    },
+                    _ => 0
+                }
+            },
+            Self::Array(arr) => {
+                // Arrays are encoded very simply
+                // First print the header byte, then just slice the slice and
+                // encode each element, checking for errors each time
+                
+            }
         }
     }
 }
