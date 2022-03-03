@@ -167,7 +167,7 @@ impl<'a> Iterator for MapDecoder<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         if  self.next_idx < self.map.len() && 
-            self.next_map < self.elements &&
+            self.next_map < self.elements/2 &&
             !self.eob
         {
             let map_opt = self.get_at_idx(self.next_idx);

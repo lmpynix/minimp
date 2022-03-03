@@ -316,7 +316,92 @@ impl<'a> EncodedElement<'a> {
                 // Arrays are encoded very simply
                 // First print the header byte, then just slice the slice and
                 // encode each element, checking for errors each time
-                
+                let mut next: usize; // Byte index to write the next thing to
+                // Cutoffs for 16 and 32-bit sizes
+                const C16: usize = u16::MAX as usize;
+                const C32: usize = u32::MAX as usize;
+                match arr.len() {
+                    0 => return 0,
+                    1..=15 => {
+                        // Write fixarr header
+                        if write_slice.len() < 1 { return 0; }
+                        write_slice[0] = 0x90 + arr.len() as u8;
+                        next = 1;
+                    },
+                    16..=C16 => {
+                        // Write arr16 header
+                        if write_slice.len() < 3 { return 0; }
+                        write_slice[0] = 0xDC;
+                        write_slice[1..3].copy_from_slice(&(arr.len() as u16).to_be_bytes());
+                        next = 3;
+                    },
+                    C16..=C32 => {
+                        // Write arr32 header
+                        if write_slice.len() < 5 { return 0; }
+                        write_slice[0] = 0xDD;
+                        write_slice[1..5].copy_from_slice(&(arr.len() as u32).to_be_bytes());
+                        next = 5;
+                    },
+                    _ => return 0
+                };
+                // Write the elements, checking each time
+                for el in arr {
+                    let n = el.write_to(write_slice, next, local_endian_fields);
+                    if n != 0 {
+                        next += n;
+                    } else {
+                        return 0;
+                    }
+                }
+                next
+            },
+            Self::Map(m) => {
+                // This is more or less copypasta from the array decoder, except
+                // now when we write elements, we have to write both the key and value.
+                // Arrays are encoded very simply
+                // First print the header byte, then just slice the slice and
+                // encode each element, checking for errors each time
+                let mut next: usize; // Byte index to write the next thing to
+                // Cutoffs for 16 and 32-bit sizes
+                const C16: usize = u16::MAX as usize;
+                const C32: usize = u32::MAX as usize;
+                let elements = m.len() * 2;
+                match elements {
+                    0 => return 0,
+                    1..=15 => {
+                        // Write fixarr header
+                        if write_slice.len() < 1 { return 0; }
+                        write_slice[0] = 0x80 + elements as u8;
+                        next = 1;
+                    },
+                    16..=C16 => {
+                        // Write arr16 header
+                        if write_slice.len() < 3 { return 0; }
+                        write_slice[0] = 0xDC;
+                        write_slice[1..3].copy_from_slice(&(elements as u16).to_be_bytes());
+                        next = 3;
+                    },
+                    C16..=C32 => {
+                        // Write arr32 header
+                        if write_slice.len() < 5 { return 0; }
+                        write_slice[0] = 0xDD;
+                        write_slice[1..5].copy_from_slice(&(elements as u32).to_be_bytes());
+                        next = 5;
+                    },
+                    _ => return 0
+                };
+                // Write the elements, checking each time
+                for map in m {
+                    for kv in map {
+                        let n = kv.write_to(write_slice, next, local_endian_fields);
+                        if n != 0 {
+                            next += n;
+                        } else {
+                            return 0;
+                        }
+                    }
+                }
+                next
             }
         }
     }
